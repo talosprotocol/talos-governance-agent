@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: talos-governance-agent
+Version: 0.1.0
+Summary: Talos Governance Agent (TGA) for secure tool execution supervision
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: fastecdsa>=2.3.0
+Requires-Dist: cryptography>=41.0.0
+Requires-Dist: mcp[cli]>=1.0.0
+Requires-Dist: PyJWT>=2.8.0
+Requires-Dist: jsonschema>=4.17.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: aiosqlite>=0.19.0
+Dynamic: license-file

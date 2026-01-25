@@ -1,4 +1,4 @@
-"""TGA Runtime Loop for Phase 9.3.4.
+"""TGA Runtime Loop for Phase 9.3.4 (Modernized).
 
 Implements crash-safe TGA execution with Moore machine state transitions.
 Recovery reconstructs state from append-only log without double-execution.
@@ -6,30 +6,39 @@ Recovery reconstructs state from append-only log without double-execution.
 import hashlib
 import json
 import logging
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
 
-from talos_governance_agent.utils.id import uuid7
+from talos_governance_agent.utils.id import uuid7 as generate_uuid7_local
+# Try to import shared contract helper, fall back to local if not present
+try:
+    from talos_contracts.uuidv7 import uuid7
+except ImportError:
+    uuid7 = generate_uuid7_local
+
 from talos_governance_agent.domain.models import (
     ExecutionLogEntry,
-    ExecutionState,
     ExecutionStateEnum,
-    ExecutionCheckpoint,
+    ExecutionState,
+    ArtifactType,
 )
-from talos_governance_agent.ports.state_store import TgaStateStore
-
-# Constants moved from state_store to domain logic
-ZERO_DIGEST = "0" * 64
-
-logger = logging.getLogger(__name__)
-
-class RuntimeError(Exception):
+# We need to define TgaRuntimeError here if not in models
+class TgaRuntimeError(Exception):
     """Runtime execution error."""
     def __init__(self, message: str, code: str):
         super().__init__(message)
         self.code = code
+
+from talos_governance_agent.domain.validator import CapabilityValidator
+from talos_governance_agent.ports.state_store import TgaStateStore
+
+# Constants - Genesis digest (all zeros in base64url)
+ZERO_DIGEST = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ExecutionPlan:
@@ -63,108 +72,193 @@ class TgaRuntime:
     Following Ports and Adapters, the store is injected.
     """
     
-    def __init__(self, store: TgaStateStore):
+    def __init__(self, store: TgaStateStore, supervisor_public_key: str):
         self.store = store
+        self.validator = CapabilityValidator(supervisor_public_key)
     
-    async def execute_plan(self, plan: ExecutionPlan) -> ExecutionResult:
+    async def authorize_tool_call(
+        self, 
+        capability_jws: str, 
+        tool_server: str, 
+        tool_name: str, 
+        args: Dict[str, Any]
+    ) -> ExecutionLogEntry:
         """
-        Execute a TGA plan with crash-safe persistence.
+        Validates capability and records the start of a tool execution.
+        Cold Path: Persists session for future warm-path access.
         """
-        trace_id = plan.trace_id
+        # 1. Decode and verify capability
+        cap = self.validator.decode_and_verify(capability_jws)
         
+        # 2. Enforce constraints
+        self.validator.validate_tool_call(cap, tool_server, tool_name, args)
+        
+        # 3. Create Session Record (Cold Path)
         try:
-            # 1. Acquire lock
-            await self.store.acquire_trace_lock(trace_id)
+            from talos_contracts.ordering import canonicalize
+        except ImportError:
+            # Local fallback for canonicalization (RFC 8785 subset)
+            def canonicalize(data: Any) -> Any:
+                 # Simplified recursive sort or just return data if json.dumps handles it?
+                 # Actually, we need to return an object that json.dumps matches.
+                 # But our session record logic dumps it.
+                 # The stored field is constraints_json = json.dumps(canonicalize(cap.constraints...))
+                 # If canonicalize returns a dict, json.dumps dumps it.
+                 # Pydantic model_dump returns a dict.
+                 # We rely on json.dumps(sort_keys=True) for the actual string.
+                 # The 'canonicalize' helper in contracts likely ensures key ordering or stricter typing.
+                 # For fallback, identity is fine as long as we use sort_keys=True in dumps.
+                 return data
+
+        now_dt = datetime.now(timezone.utc)
+        session_id = str(uuid7())
+        
+        session_record = {
+            "session_id": session_id,
+            "principal_id": cap.iss, # Assuming binding to Issuer/Supervisor identity
+            "capability_jti": cap.nonce, # Mapping nonce to JTI per model
+            "capability_kid": "unknown", # Validator needs to expose kid
+            "expires_at": datetime.fromtimestamp(cap.exp, timezone.utc).isoformat().replace('+00:00', 'Z'),
+            "constraints_json": json.dumps(canonicalize(cap.constraints.model_dump(by_alias=True))),
+            "created_at": now_dt.isoformat(),
+            "last_seen_at": now_dt.isoformat()
+        }
+        
+        # Persist session
+        await self.store.put_session(session_record)
+        
+        trace_id = str(cap.trace_id)
+        
+        await self.store.acquire_trace_lock(trace_id)
+        try:
+            state = await self.store.load_state(trace_id)
             
-            # Check if already exists
-            existing = await self.store.load_state(trace_id)
-            if existing:
-                logger.info(f"Trace {trace_id} already exists at {existing.current_state}")
-                return await self._resume_execution(plan, existing)
-            
-            # 2. Genesis: persist action_request, append PENDING
-            ar_digest = self._compute_digest(plan.action_request)
-            genesis_entry = self._make_entry(
-                trace_id=trace_id,
-                seq=1,
-                prev_digest=ZERO_DIGEST,
-                from_state=ExecutionStateEnum.PENDING,
-                to_state=ExecutionStateEnum.PENDING,
-                artifact_type="action_request",
-                artifact_id=plan.action_request.get("action_request_id", plan.plan_id),
-                artifact_digest=ar_digest
-            )
-            await self.store.append_log_entry(genesis_entry)
-            
-            # 3. Get supervisor decision
-            if plan.supervisor_decision_fn:
-                decision = await plan.supervisor_decision_fn(plan.action_request)
-            else:
-                decision = {"approved": True, "capability": {}}
-            
-            sd_id = decision.get("decision_id", self._generate_id())
-            sd_digest = self._compute_digest(decision)
-            
-            if not decision.get("approved"):
-                denied_entry = self._make_entry(
+            # If PENDING, we need to transition to AUTHORIZED first (Genesis)
+            if not state:
+                # In this standalone mode, we assume the action request is implicit in the capability
+                # or provided previously. 
+                genesis_entry = self._make_entry(
                     trace_id=trace_id,
-                    seq=2,
-                    prev_digest=genesis_entry.entry_digest,
+                    principal_id=cap.iss,
+                    sequence_number=1,
+                    prev_entry_digest=ZERO_DIGEST,
                     from_state=ExecutionStateEnum.PENDING,
-                    to_state=ExecutionStateEnum.DENIED,
-                    artifact_type="supervisor_decision",
-                    artifact_id=sd_id,
-                    artifact_digest=sd_digest
+                    to_state=ExecutionStateEnum.PENDING,
+                    artifact_type=ArtifactType.ACTION_REQUEST,
+                    artifact_id=str(cap.plan_id),
+                    artifact_digest=self._compute_digest({"implicit": True})
                 )
-                await self.store.append_log_entry(denied_entry)
-                return ExecutionResult(
+                await self.store.append_log_entry(genesis_entry)
+                
+                auth_entry = self._make_entry(
                     trace_id=trace_id,
-                    final_state=ExecutionStateEnum.DENIED,
-                    error="Supervisor denied the action"
+                    principal_id=cap.iss,
+                    sequence_number=2,
+                    prev_entry_digest=genesis_entry.entry_digest,
+                    from_state=ExecutionStateEnum.PENDING,
+                    to_state=ExecutionStateEnum.AUTHORIZED,
+                    artifact_type=ArtifactType.SUPERVISOR_DECISION,
+                    artifact_id=f"sd-{trace_id[:8]}", # TODO: Use real ID
+                    artifact_digest=self.validator.calculate_capability_digest(capability_jws)
                 )
+                await self.store.append_log_entry(auth_entry)
+                state = await self.store.load_state(trace_id)
             
-            auth_entry = self._make_entry(
+            if not state or state.current_state != ExecutionStateEnum.AUTHORIZED:
+                 status = state.current_state if state else "None"
+                 raise TgaRuntimeError(f"Trace {trace_id} in invalid state: {status}", "INVALID_STATE")
+            
+            # 3. Create tool_call entry
+            tool_call_obj = {
+                "tool_call_id": session_id,
+                "trace_id": trace_id,
+                "plan_id": str(cap.plan_id),
+                "capability_digest": self.validator.calculate_capability_digest(capability_jws),
+                "call": {"server": tool_server, "name": tool_name, "args": args},
+                "idempotency_key": f"idem-{trace_id[:8]}", # Replace with UUIDv7
+                "session_id": session_id
+            }
+            # Correct idempotency key to strict UUIDv7 as per models
+            tool_call_obj["idempotency_key"] = str(uuid7())
+            
+            tc_entry = self._make_entry(
                 trace_id=trace_id,
-                seq=2,
-                prev_digest=genesis_entry.entry_digest,
-                from_state=ExecutionStateEnum.PENDING,
-                to_state=ExecutionStateEnum.AUTHORIZED,
-                artifact_type="supervisor_decision",
-                artifact_id=sd_id,
-                artifact_digest=sd_digest
-            )
-            await self.store.append_log_entry(auth_entry)
-            
-            # 4. Create tool_call, append EXECUTING
-            tool_call = self._create_tool_call(plan, decision)
-            tc_id = tool_call.get("tool_call_id", self._generate_id())
-            tc_digest = self._compute_digest(tool_call)
-            idempotency_key = tool_call.get("idempotency_key")
-            
-            exec_entry = self._make_entry(
-                trace_id=trace_id,
-                seq=3,
-                prev_digest=auth_entry.entry_digest,
+                principal_id=cap.iss,
+                sequence_number=state.last_sequence_number + 1,
+                prev_entry_digest=state.last_entry_digest,
                 from_state=ExecutionStateEnum.AUTHORIZED,
                 to_state=ExecutionStateEnum.EXECUTING,
-                artifact_type="tool_call",
-                artifact_id=tc_id,
-                artifact_digest=tc_digest,
-                tool_call_id=tc_id,
-                idempotency_key=idempotency_key
+                artifact_type=ArtifactType.TOOL_CALL,
+                artifact_id=tool_call_obj["tool_call_id"],
+                artifact_digest=self._compute_digest(tool_call_obj),
+                tool_call_id=tool_call_obj["tool_call_id"],
+                idempotency_key=tool_call_obj["idempotency_key"],
+                session_id=session_id
             )
-            await self.store.append_log_entry(exec_entry)
+            await self.store.append_log_entry(tc_entry)
+            return tc_entry
             
-            # 5. Dispatch to connector (idempotent)
-            if plan.tool_dispatch_fn:
-                tool_effect = await plan.tool_dispatch_fn(tool_call)
-            else:
-                tool_effect = {"outcome": {"status": "SUCCESS"}}
+        finally:
+            await self.store.release_trace_lock(trace_id)
+
+    async def authorize_warm_path(
+        self,
+        session_id: str,
+        principal_id: str,
+        tool_server: str,
+        tool_name: str,
+        args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        High-performance authorization using cached session metadata.
+        """
+        # 1. Lookup Session
+        session = await self.store.get_session(session_id)
+        if not session:
+            raise TgaRuntimeError("Session not found", "TGA_SESSION_NOT_FOUND")
             
-            te_id = tool_effect.get("tool_effect_id", self._generate_id())
-            te_digest = self._compute_digest(tool_effect)
+        # 2. Check Expiry
+        now = datetime.now(timezone.utc)
+        expires_at = datetime.fromisoformat(session["expires_at"].replace("Z", "+00:00"))
+        if now > expires_at:
+            raise TgaRuntimeError("Session expired", "TGA_SESSION_EXPIRED")
             
-            # 6. Persist tool_effect, append COMPLETED or FAILED
+        # 3. Check Principal Binding
+        if session["principal_id"] != principal_id:
+            raise TgaRuntimeError("Principal mismatch", "TGA_PRINCIPAL_MISMATCH")
+            
+        # 4. Check Constraints (Deterministic)
+        stored_constraints = json.loads(session["constraints_json"])
+        
+        if stored_constraints["tool_server"] != tool_server:
+             raise TgaRuntimeError("Tool server mismatch", "TGA_CONSTRAINT_MISMATCH")
+        if stored_constraints["tool_name"] != tool_name:
+             raise TgaRuntimeError("Tool name mismatch", "TGA_CONSTRAINT_MISMATCH")
+             
+        # TODO: Args validation against stored constraints arg_digest/schema
+        
+        # Critical: Update last_seen_at SYNCHRONOUSLY
+        await self.store.touch_session(session_id, now.isoformat())
+        
+        return {
+             "authorized": True,
+             "trace_id": "cached", 
+        }
+
+    async def record_tool_effect(
+        self, 
+        trace_id: str, 
+        tool_effect: Dict[str, Any]
+    ) -> ExecutionLogEntry:
+        """
+        Records the result of a tool execution and transitions to final state.
+        """
+        await self.store.acquire_trace_lock(trace_id)
+        try:
+            state = await self.store.load_state(trace_id)
+            if not state or state.current_state != ExecutionStateEnum.EXECUTING:
+                 raise TgaRuntimeError(f"Trace {trace_id} not in EXECUTING state", "INVALID_STATE")
+            
             outcome_status = tool_effect.get("outcome", {}).get("status", "SUCCESS")
             final_state = (
                 ExecutionStateEnum.COMPLETED 
@@ -172,54 +266,64 @@ class TgaRuntime:
                 else ExecutionStateEnum.FAILED
             )
             
+            # Use state trace_id as context principal? Or we need to persist principal in ExecutionState
+            # Current ExecutionState model doesn't store principal. Assuming principal is constant for trace.
+            # Ideally we fetch it from the last entry or state.
+            # Simplified: Use a specialized 'system' principal or retrieve from genesis.
+            # Let's retrieve from latest entry for now.
+            # Or pass principal_id in arguments?
+            
+            # Retrieving principal from previous entry
+            entries = await self.store.list_log_entries(trace_id, after_seq=state.last_sequence_number-1)
+            # Should have at least the executing entry
+            if entries:
+                principal_id = entries[0].principal_id
+            else:
+                 # Fallback/Error
+                 raise TgaRuntimeError("Could not determine principal for effect", "INTERNAL_ERROR")
+            
             effect_entry = self._make_entry(
                 trace_id=trace_id,
-                seq=4,
-                prev_digest=exec_entry.entry_digest,
+                principal_id=principal_id,
+                sequence_number=state.last_sequence_number + 1,
+                prev_entry_digest=state.last_entry_digest,
                 from_state=ExecutionStateEnum.EXECUTING,
                 to_state=final_state,
-                artifact_type="tool_effect",
-                artifact_id=te_id,
-                artifact_digest=te_digest,
-                tool_call_id=tc_id,
-                idempotency_key=idempotency_key
+                artifact_type=ArtifactType.TOOL_EFFECT,
+                artifact_id=tool_effect.get("tool_effect_id", str(uuid7())),
+                artifact_digest=self._compute_digest(tool_effect)
             )
             await self.store.append_log_entry(effect_entry)
-            
-            return ExecutionResult(
-                trace_id=trace_id,
-                final_state=final_state,
-                tool_effect=tool_effect
-            )
+            return effect_entry
             
         finally:
             await self.store.release_trace_lock(trace_id)
-    
+
     async def recover(self, trace_id: str) -> RecoveryResult:
         """Recover from crash by replaying log and resuming execution."""
         try:
             await self.store.acquire_trace_lock(trace_id)
             state = await self.store.load_state(trace_id)
             if not state:
-                 raise RuntimeError(f"No state found for trace {trace_id}", "STATE_RECOVERY_FAILED")
+                 raise TgaRuntimeError(f"No state found for trace {trace_id}", "STATE_RECOVERY_FAILED")
             
             entries = await self.store.list_log_entries(trace_id)
             if not entries:
-                 raise RuntimeError(f"No log entries for trace {trace_id}", "STATE_RECOVERY_FAILED")
+                 raise TgaRuntimeError(f"No log entries for trace {trace_id}", "STATE_RECOVERY_FAILED")
             
             # Hash chain validation
             for i, entry in enumerate(entries):
                 if i == 0:
                     if entry.prev_entry_digest != ZERO_DIGEST:
-                         raise RuntimeError("Genesis entry invalid", "STATE_CHECKSUM_MISMATCH")
+                         raise TgaRuntimeError("Genesis entry invalid", "STATE_CHECKSUM_MISMATCH")
                 else:
                     if entry.prev_entry_digest != entries[i-1].entry_digest:
-                         raise RuntimeError(f"Hash chain broken at seq {entry.sequence_number}", "STATE_CHECKSUM_MISMATCH")
+                         raise TgaRuntimeError(f"Hash chain broken at seq {entry.sequence_number}", "STATE_CHECKSUM_MISMATCH")
             
             last_entry = entries[-1]
             if state.current_state == ExecutionStateEnum.EXECUTING:
-                tc_entry = next((e for e in entries if e.artifact_type == "tool_call"), None)
-                te_entry = next((e for e in entries if e.artifact_type == "tool_effect"), None)
+                tc_entry = next((e for e in entries if e.artifact_type == ArtifactType.TOOL_CALL), None)
+                te_entry = next((e for e in entries if e.artifact_type == ArtifactType.TOOL_EFFECT), None)
                 
                 if tc_entry and te_entry is None:
                     return RecoveryResult(
@@ -239,36 +343,46 @@ class TgaRuntime:
         finally:
             await self.store.release_trace_lock(trace_id)
 
-    async def _resume_execution(self, plan: ExecutionPlan, state: ExecutionState) -> ExecutionResult:
-        if state.current_state in (ExecutionStateEnum.COMPLETED, ExecutionStateEnum.FAILED, ExecutionStateEnum.DENIED):
-            return ExecutionResult(trace_id=plan.trace_id, final_state=state.current_state)
-        recovery = await self.recover(plan.trace_id)
-        return ExecutionResult(trace_id=plan.trace_id, final_state=recovery.recovered_state)
-
     def _make_entry(self, **kwargs) -> ExecutionLogEntry:
         if "ts" not in kwargs:
             kwargs["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        entry = ExecutionLogEntry(
-            schema_id="talos.tga.execution_log_entry",
-            schema_version="v1",
-            **kwargs
-        )
-        entry.entry_digest = entry.compute_digest()
+        
+        # Compute digest BEFORE creating the object to satisfy strict validation
+        # The digest excludes 'entry_digest' itself (and others), so we can compute it from kwargs.
+        # We ensure excluded fields are absent or ignored by _compute_digest logic?
+        # _compute_digest uses json.dumps directly. 
+        # But wait, TgaBaseModel.compute_digest relies on .model_dump() which handles aliases etc.
+        # If we use _compute_digest(kwargs), we might miss aliases or serialization rules (e.g. enum values).
+        # We need to ensure kwargs match the serialized form.
+        # Enums in kwargs are likely Enum objects. json.dumps fails on them unless handled.
+        # Our `_compute_digest` helper is:
+        # json.dumps(data, ...)
+        
+        # Better approach: initialize with a valid placeholder "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        # then update. This satisfies regex.
+        # But we need to ensure the final object has the CORRECT digest.
+        
+        if "entry_digest" not in kwargs:
+            kwargs["entry_digest"] = ZERO_DIGEST
+            
+        entry = ExecutionLogEntry(**kwargs)
+        
+        # Now compute real digest
+        real_digest = entry.compute_digest()
+        
+        # Return a new object with the correct digest (using model_copy to strictly validate if we want, 
+        # or since validation ran once, we can trust the rest and just swap string).
+        # ExecutionLogEntry is not frozen, but we want strict adherence.
+        # If we update the field, does Pydantic V2 re-validate assignment? Yes, we set validate_assignment=True.
+        # So we can just set it.
+        
+        entry.entry_digest = real_digest
         return entry
 
     def _compute_digest(self, data: Dict[str, Any]) -> str:
+        """Compute base64url SHA-256 of canonical JSON."""
+        # Use TgaBaseModel logic via a temporary helper or duplication?
+        # Duplication for simple dicts is fine to avoid instantiating models just for digest
         canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-    def _generate_id(self) -> str:
-        return str(uuid7())
-
-    def _create_tool_call(self, plan: ExecutionPlan, decision: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "tool_call_id": uuid7(),
-            "trace_id": plan.trace_id,
-            "plan_id": plan.plan_id,
-            "capability": decision.get("capability", {}),
-            "call": plan.action_request.get("call", {}),
-            "idempotency_key": f"idem-{plan.trace_id[:8]}"
-        }
+        digest = hashlib.sha256(canonical.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")

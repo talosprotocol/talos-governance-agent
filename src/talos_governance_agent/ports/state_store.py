@@ -1,4 +1,4 @@
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import List, Optional, Protocol, runtime_checkable, Dict, Any
 from talos_governance_agent.domain.models import (
     ExecutionLogEntry,
     ExecutionState,
@@ -45,4 +45,20 @@ class TgaStateStore(Protocol):
         trace_id: str
     ) -> Optional[ExecutionCheckpoint]:
         """Load the latest valid checkpoint."""
+        ...
+
+    async def put_session(self, session: Dict[str, Any]) -> None:
+        """Persist a new session record."""
+        ...
+
+    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a session by ID."""
+        ...
+
+    async def touch_session(self, session_id: str, now: str) -> None:
+        """Update last_seen_at synchronously."""
+        ...
+
+    async def delete_expired_sessions(self, now: str) -> int:
+        """Remove expired sessions."""
         ...

@@ -1,9 +1,10 @@
 """TGA Capability Validator using PyJWT for EdDSA/Ed25519 support."""
-from typing import Optional
+from typing import Optional, Dict, Any
 import jwt
-from .models import TgaCapability, TgaCapabilityConstraints
 import hashlib
 import time
+import base64
+from .models import TgaCapability, TgaCapabilityConstraints
 
 class CapabilityValidationError(Exception):
     def __init__(self, message: str, code: str = "CAPABILITY_INVALID"):
@@ -42,7 +43,7 @@ class CapabilityValidator:
                 
             payload = jwt.decode(
                 token, 
-                pub_key, 
+                pub_key, # type: ignore
                 algorithms=['EdDSA'],
                 audience='talos-gateway'
             )
@@ -88,7 +89,7 @@ class CapabilityValidator:
         if cap.nbf and cap.nbf > now:
              raise CapabilityValidationError("Capability not yet valid", "NOT_BEFORE")
 
-    def validate_tool_call(self, cap: TgaCapability, tool_server: str, tool_name: str, args: dict):
+    def validate_tool_call(self, cap: TgaCapability, tool_server: str, tool_name: str, args: Dict[str, Any]):
         """
         Enforce capability constraints against a specific tool call.
         """
@@ -104,15 +105,13 @@ class CapabilityValidator:
         # 2. Read-Only Enforcement
         if con.read_only:
             mutation_prefixes = ["create-", "update-", "delete-", "write-", "apply-"]
-            if any(tool_name.startswith(p) for p in mutation_prefixes):
+            if any(tool_name.lower().startswith(p) for p in mutation_prefixes):
                  raise CapabilityValidationError(f"Mutation tool '{tool_name}' forbidden in READ_ONLY capability", "READ_ONLY_VIOLATION")
 
-        # 3. Argument Schema Constraints (SHA-256 of Schema)
-        if con.arg_constraints:
-            # In a real implementation, we would validate 'args' against the 
-            # schema identified by 'arg_constraints'. 
-            pass
-
     def calculate_capability_digest(self, token: str) -> str:
-        """SHA-256 of the raw JWS token (normative binding)."""
-        return hashlib.sha256(token.encode('utf-8')).hexdigest()
+        """
+        SHA-256 of the raw JWS token (normative binding).
+        Returns base64url encoded digest without padding.
+        """
+        digest = hashlib.sha256(token.encode('utf-8')).digest()
+        return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
