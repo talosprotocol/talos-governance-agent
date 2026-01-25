@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 # Initialize FastMCP
 mcp = FastMCP("talos-governance-agent")
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok"})
+
 # Dependencies (will be initialized in main or via a singleton pattern for MCP)
 _runtime: Optional[TgaRuntime] = None
 

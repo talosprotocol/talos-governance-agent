@@ -53,4 +53,14 @@ if __name__ == "__main__":
     loop.run_until_complete(store.initialize())
     
     logger.info("Starting FastMCP server...")
-    mcp.run()
+    port_str = os.getenv("PORT")
+    if port_str:
+        import uvicorn
+        port = int(port_str)
+        logger.info(f"Running in SSE mode on port {port}")
+        # FastMCP.sse_app() returns the starlette app
+        app = mcp.sse_app()
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        logger.info("Running in Stdio mode")
+        mcp.run()
