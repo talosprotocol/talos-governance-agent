@@ -1,4 +1,5 @@
 # Agent workspace: services/governance-agent
+> **Project**: services/governance-agent
 
 This folder contains agent-facing context, tasks, workflows, and planning artifacts for this submodule.
 
