@@ -4,6 +4,7 @@ import jwt
 import hashlib
 import time
 import base64
+import json
 from .models import TgaCapability, TgaCapabilityConstraints
 
 class CapabilityValidationError(Exception):
@@ -107,6 +108,42 @@ class CapabilityValidator:
             mutation_prefixes = ["create-", "update-", "delete-", "write-", "apply-"]
             if any(tool_name.lower().startswith(p) for p in mutation_prefixes):
                  raise CapabilityValidationError(f"Mutation tool '{tool_name}' forbidden in READ_ONLY capability", "READ_ONLY_VIOLATION")
+
+        # 3. Target Allowlist Enforcement
+        if con.target_allowlist and "*" not in con.target_allowlist:
+            import fnmatch
+            # Identify target candidates from args (common fields)
+            target_candidates = ["repo", "repository", "path", "url", "target", "container", "resource"]
+            found_target = False
+            for cand in target_candidates:
+                if cand in args:
+                    val = str(args[cand])
+                    if any(fnmatch.fnmatch(val, pattern) for pattern in con.target_allowlist):
+                        found_target = True
+                        break
+            
+            if not found_target:
+                raise CapabilityValidationError(
+                    f"Target unauthorized by allowlist: {args}. Required matching one of {con.target_allowlist}",
+                    "TARGET_UNAUTHORIZED"
+                )
+
+        # 4. Argument Schema Constraints (Deterministic)
+        if con.arg_constraints_digest:
+            actual_args_digest = self._compute_args_digest(args)
+            if actual_args_digest != con.arg_constraints_digest:
+                # Note: In some systems this is a schema digest, but for deterministic 
+                # authz we treat it as a strict argument pin here if it doesn't match a known schema.
+                raise CapabilityValidationError(
+                    f"Arguments do not match constraints. Expected digest {con.arg_constraints_digest}, got {actual_args_digest}",
+                    "ARGS_UNAUTHORIZED"
+                )
+
+    def _compute_args_digest(self, args: Dict[str, Any]) -> str:
+        """Compute base64url SHA-256 of canonical JSON args."""
+        canonical = json.dumps(args, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
     def calculate_capability_digest(self, token: str) -> str:
         """

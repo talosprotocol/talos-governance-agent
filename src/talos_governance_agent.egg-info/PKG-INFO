@@ -4,6 +4,7 @@ Version: 0.1.0
 Summary: Talos Governance Agent (TGA) for secure tool execution supervision
 Requires-Python: >=3.10
 License-File: LICENSE
+License-File: NOTICE
 Requires-Dist: pydantic>=2.0.0
 Requires-Dist: fastecdsa>=2.3.0
 Requires-Dist: cryptography>=41.0.0
@@ -12,4 +13,5 @@ Requires-Dist: PyJWT>=2.8.0
 Requires-Dist: jsonschema>=4.17.0
 Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: aiosqlite>=0.19.0
+Requires-Dist: uvicorn>=0.22.0
 Dynamic: license-file

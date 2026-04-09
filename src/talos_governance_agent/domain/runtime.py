@@ -158,7 +158,7 @@ class TgaRuntime:
                     from_state=ExecutionStateEnum.PENDING,
                     to_state=ExecutionStateEnum.AUTHORIZED,
                     artifact_type=ArtifactType.SUPERVISOR_DECISION,
-                    artifact_id=f"sd-{trace_id[:8]}", # TODO: Use real ID
+                    artifact_id=cap.nonce, # Mapping nonce to JTI per model
                     artifact_digest=self.validator.calculate_capability_digest(capability_jws)
                 )
                 await self.store.append_log_entry(auth_entry)
