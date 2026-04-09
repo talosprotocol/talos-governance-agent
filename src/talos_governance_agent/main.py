@@ -10,17 +10,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Default dev public key (ed25519) - matching example tests if needed
-# In production, this MUST be set via TGA_SUPERVISOR_PUBLIC_KEY env var
-DEV_PUBLIC_KEY = """[REDACTED_BY_POLICY]"""
-
 async def run_server():
     logger.info("Starting Talos Governance Agent MCP Server...")
     
     # Configuration
     db_path = os.getenv("TGA_DB_PATH", "governance_agent.db")
-    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY", DEV_PUBLIC_KEY)
+    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
     
+    if not supervisor_pub_key:
+        logger.error("FATAL: TGA_SUPERVISOR_PUBLIC_KEY environment variable not set.")
+        return
+
     # Initialize infrastructure
     logger.info(f"Initializing SQLite state store at {db_path}")
     store = init_runtime(db_path, supervisor_pub_key)
@@ -45,8 +45,12 @@ if __name__ == "__main__":
     
     loop = asyncio.get_event_loop()
     db_path = os.getenv("TGA_DB_PATH", "governance_agent.db")
-    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY", DEV_PUBLIC_KEY)
+    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
     
+    if not supervisor_pub_key:
+        print("FATAL: TGA_SUPERVISOR_PUBLIC_KEY environment variable not set.")
+        exit(1)
+
     store = loop.run_until_complete(init_runtime(db_path, supervisor_pub_key))
     loop.run_until_complete(store.initialize())
     
