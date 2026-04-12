@@ -1,6 +1,6 @@
 pydantic>=2.0.0
 fastecdsa>=2.3.0
-cryptography>=41.0.0
+cryptography>=46.0.3
 mcp[cli]>=1.0.0
 PyJWT>=2.8.0
 jsonschema>=4.17.0

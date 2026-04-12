@@ -1,0 +1,68 @@
+import logging
+import os
+import asyncio
+from talos_governance_agent.adapters.mcp_server import mcp, init_runtime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+async def run_server():
+    logger.info("Starting Talos Governance Agent MCP Server...")
+    
+    # Configuration
+    db_path = os.getenv("TGA_DB_PATH", "governance_agent.db")
+    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
+    
+    if not supervisor_pub_key:
+        logger.error("FATAL: TGA_SUPERVISOR_PUBLIC_KEY environment variable not set.")
+        return
+
+    # Initialize infrastructure
+    logger.info(f"Initializing SQLite state store at {db_path}")
+    store = init_runtime(db_path, supervisor_pub_key)
+    await store.initialize()
+    
+    logger.info("TGA Runtime and MCP Server initialized.")
+    
+    # Run FastMCP (Stdio mode by default)
+    # Note: FastMCP.run() is synchronous but we are in an async context.
+    # We can use the mcp.run() directly if we are at the top level, 
+    # but here we might want to use the internal server if we need more control.
+    # For simplicity, we just use the default run()
+    mcp.run()
+
+if __name__ == "__main__":
+    # Since mcp.run() handles its own loop if not provided, 
+    # but we need to initialize the store first.
+    # Alternatively, we can use the async startup of FastMCP if available.
+    
+    # For FastMCP, the simplest is to call run() which handles the event loop.
+    # However, we need to await store.initialize().
+    
+    loop = asyncio.get_event_loop()
+    db_path = os.getenv("TGA_DB_PATH", "governance_agent.db")
+    supervisor_pub_key = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
+    
+    if not supervisor_pub_key:
+        print("FATAL: TGA_SUPERVISOR_PUBLIC_KEY environment variable not set.")
+        exit(1)
+
+    store = loop.run_until_complete(init_runtime(db_path, supervisor_pub_key))
+    loop.run_until_complete(store.initialize())
+    
+    logger.info("Starting FastMCP server...")
+    port_str = os.getenv("PORT")
+    if port_str:
+        import uvicorn
+        port = int(port_str)
+        logger.info(f"Running in SSE mode on port {port}")
+        # FastMCP.sse_app() returns the starlette app
+        app = mcp.sse_app()
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        logger.info("Running in Stdio mode")
+        mcp.run()
