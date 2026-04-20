@@ -175,11 +175,9 @@ class TgaRuntime:
                 "plan_id": str(cap.plan_id),
                 "capability_digest": self.validator.calculate_capability_digest(capability_jws),
                 "call": {"server": tool_server, "name": tool_name, "args": args},
-                "idempotency_key": f"idem-{trace_id[:8]}", # Replace with UUIDv7
+                "idempotency_key": str(uuid7()),
                 "session_id": session_id
             }
-            # Correct idempotency key to strict UUIDv7 as per models
-            tool_call_obj["idempotency_key"] = str(uuid7())
             
             tc_entry = self._make_entry(
                 trace_id=trace_id,
@@ -235,7 +233,12 @@ class TgaRuntime:
         if stored_constraints["tool_name"] != tool_name:
              raise TgaRuntimeError("Tool name mismatch", "TGA_CONSTRAINT_MISMATCH")
              
-        # TODO: Args validation against stored constraints arg_digest/schema
+        # 5. Deterministic argument validation
+        arg_constraints = stored_constraints.get("arg_constraints")
+        if arg_constraints:
+            actual_args_digest = self.validator._compute_args_digest(args)
+            if actual_args_digest != arg_constraints:
+                raise TgaRuntimeError("Arguments unauthorized by constraints", "TGA_CONSTRAINT_MISMATCH")
         
         # Critical: Update last_seen_at SYNCHRONOUSLY
         await self.store.touch_session(session_id, now.isoformat())

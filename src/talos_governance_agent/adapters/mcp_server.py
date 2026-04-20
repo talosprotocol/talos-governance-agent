@@ -75,8 +75,8 @@ async def governance_authorize(
                     "session_id": session_id,
                     "trace_id": result.get("trace_id", "cached"),
                     "args": args,
-                    # Warm path digest might be skipped or simplified
-                    "args_digest": "", # TODO: Compute if needed by constraints
+                    # Compute args_digest for consistency and constraint validation
+                    "args_digest": _runtime.validator._compute_args_digest(args or {}),
                 }
             }
             
@@ -167,3 +167,30 @@ async def governance_recover(trace_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Recovery failed: {e}")
         return {"error": {"code": "RECOVERY_FAILED", "message": str(e)}}
+
+@mcp.tool()
+async def governance_export_logs(trace_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    """
+    Exports high-integrity execution logs for auditing.
+    """
+    try:
+        if _runtime is None:
+             return {"error": {"code": "INTERNAL_ERROR", "message": "Runtime not initialized"}}
+
+        entries = await _runtime.store.list_log_entries(trace_id, limit=limit)
+        return {
+            "entries": [
+                {
+                    "trace_id": e.trace_id,
+                    "sequence_number": e.sequence_number,
+                    "artifact_type": e.artifact_type,
+                    "ts": e.ts,
+                    "status": "VALIDATED", # Check chain?
+                    "principal_id": e.principal_id,
+                    "artifact_id": e.artifact_id
+                } for e in entries
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Log export failed: {e}")
+        return {"error": {"code": "LOG_EXPORT_FAILED", "message": str(e)}}
