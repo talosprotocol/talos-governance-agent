@@ -9,8 +9,7 @@ import logging
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
-from enum import Enum
+from typing import Any, Callable, Dict, Optional
 
 from talos_governance_agent.utils.id import uuid7 as generate_uuid7_local
 # Try to import shared contract helper, fall back to local if not present
@@ -22,7 +21,6 @@ except ImportError:
 from talos_governance_agent.domain.models import (
     ExecutionLogEntry,
     ExecutionStateEnum,
-    ExecutionState,
     ArtifactType,
 )
 # We need to define TgaRuntimeError here if not in models
@@ -299,6 +297,41 @@ class TgaRuntime:
             await self.store.append_log_entry(effect_entry)
             return effect_entry
             
+        finally:
+            await self.store.release_trace_lock(trace_id)
+
+    async def record_generic_artifact(
+        self,
+        trace_id: str,
+        artifact_type: ArtifactType,
+        artifact_data: Dict[str, Any]
+    ) -> ExecutionLogEntry:
+        """Records a generic artifact to the log without strict state transition validation."""
+        await self.store.acquire_trace_lock(trace_id)
+        try:
+            state = await self.store.load_state(trace_id)
+            if not state:
+                 raise TgaRuntimeError(f"Trace {trace_id} not found for generic log", "INVALID_STATE")
+            
+            entries = await self.store.list_log_entries(trace_id, after_seq=state.last_sequence_number-1)
+            if entries:
+                principal_id = entries[0].principal_id
+            else:
+                 raise TgaRuntimeError("Could not determine principal for generic artifact", "INTERNAL_ERROR")
+            
+            entry = self._make_entry(
+                trace_id=trace_id,
+                principal_id=principal_id,
+                sequence_number=state.last_sequence_number + 1,
+                prev_entry_digest=state.last_entry_digest,
+                from_state=state.current_state,
+                to_state=state.current_state, # Doesn't advance state machine
+                artifact_type=artifact_type,
+                artifact_id=str(uuid7()),
+                artifact_digest=self._compute_digest(artifact_data)
+            )
+            await self.store.append_log_entry(entry)
+            return entry
         finally:
             await self.store.release_trace_lock(trace_id)
 

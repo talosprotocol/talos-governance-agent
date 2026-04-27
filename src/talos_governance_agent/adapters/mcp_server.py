@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Any, Dict, Optional
 from mcp.server.fastmcp import FastMCP
 from talos_governance_agent.domain.runtime import TgaRuntime
@@ -122,8 +121,11 @@ async def governance_log(
         if artifact_type == ArtifactType.TOOL_EFFECT:
             entry = await _runtime.record_tool_effect(trace_id, artifact_data)
         else:
-             # Fallback or generic append if supported (Runtime currently specializes)
-             return {"error": {"code": "NOT_IMPLEMENTED", "message": f"Artifact type {artifact_type} not supported via log endpoint yet"}}
+            try:
+                artifact_enum = ArtifactType(artifact_type)
+                entry = await _runtime.record_generic_artifact(trace_id, artifact_enum, artifact_data)
+            except ValueError:
+                return {"error": {"code": "INVALID_ARGUMENTS", "message": f"Unknown artifact type {artifact_type}"}}
 
         return {
             "entry": {
