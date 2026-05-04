@@ -272,9 +272,9 @@ def example_usage():
     
     try:
         # Create components
-        transcriber = factory.create_transcriber(config)
-        agent = factory.create_agent(config)
-        synthesizer = factory.create_synthesizer(config)
+        factory.create_transcriber(config)
+        factory.create_agent(config)
+        factory.create_synthesizer(config)
         
         print("✅ All components created successfully!")
         

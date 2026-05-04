@@ -9,8 +9,7 @@ import logging
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
-from enum import Enum
+from typing import Any, Callable, Dict, Optional
 
 from talos_governance_agent.utils.id import uuid7 as generate_uuid7_local
 # Try to import shared contract helper, fall back to local if not present
@@ -22,7 +21,6 @@ except ImportError:
 from talos_governance_agent.domain.models import (
     ExecutionLogEntry,
     ExecutionStateEnum,
-    ExecutionState,
     ArtifactType,
 )
 # We need to define TgaRuntimeError here if not in models

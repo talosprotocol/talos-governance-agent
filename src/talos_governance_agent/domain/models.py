@@ -1,11 +1,10 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any, Annotated
 from uuid import UUID
 from enum import Enum
 import hashlib
 import json
 import base64
-import re
 
 # Strict Validation Patterns
 # UUIDv7: 8 chars, 4 chars, 4 chars (started 7), 4 chars (variant 89ab), 12 chars

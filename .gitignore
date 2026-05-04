@@ -1,3 +1,7 @@
 tga.db*
+test_*.db*
+*.db-shm
+*.db-wal
 __pycache__/
 .venv/
+*.egg-info/

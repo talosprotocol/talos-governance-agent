@@ -3,7 +3,7 @@ Competitor analysis module for App Store Optimization.
 Analyzes top competitors' ASO strategies and identifies opportunities.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from collections import Counter
 import re
 

@@ -1,9 +1,7 @@
 import pytest
-import asyncio
 import os
 import json
 import jwt
-import base64
 import aiosqlite
 from datetime import datetime, timezone, timedelta
 from talos_governance_agent.domain.models import ExecutionStateEnum
@@ -133,7 +131,7 @@ async def test_hash_chain_tamper_detection(runtime, keys):
     cap_jws = create_capability(trace_id, plan_id, priv_pem)
     
     # Authorize
-    entry = await runtime.authorize_tool_call(
+    await runtime.authorize_tool_call(
         cap_jws, "mcp-github", "create-pr", {"repo": "talosprotocol/talos"}
     )
     

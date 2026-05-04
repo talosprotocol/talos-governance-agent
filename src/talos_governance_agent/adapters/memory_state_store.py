@@ -1,14 +1,11 @@
 import asyncio
-import hashlib
-import json
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from talos_governance_agent.domain.models import (
     ExecutionLogEntry,
     ExecutionState,
     ExecutionStateEnum,
     ExecutionCheckpoint,
 )
-from talos_governance_agent.ports.state_store import TgaStateStore
 
 ALLOWED_TRANSITIONS = {
     (ExecutionStateEnum.PENDING, ExecutionStateEnum.AUTHORIZED),

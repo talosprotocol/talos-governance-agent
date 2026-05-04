@@ -5,7 +5,6 @@ description = "Talos Governance Agent (TGA) for secure tool execution supervisio
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0.0",
-    "fastecdsa>=2.3.0",
     "cryptography>=46.0.3",
     "mcp[cli]>=1.0.0",
     "PyJWT>=2.8.0",

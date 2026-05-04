@@ -3,7 +3,6 @@
 # Attempts: 1
 # Passed: True
 
-from typing import List
 
 
 def sort_numbers(numbers: str) -> str:

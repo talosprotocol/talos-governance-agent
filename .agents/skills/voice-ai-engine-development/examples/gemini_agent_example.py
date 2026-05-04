@@ -69,7 +69,7 @@ class GeminiAgent:
         logger.info(f"🤖 [AGENT] Generating response for: '{user_input}'")
         
         # Build conversation context for Gemini
-        contents = self._build_gemini_contents()
+        self._build_gemini_contents()
         
         # Stream response from Gemini and buffer it
         full_response = ""

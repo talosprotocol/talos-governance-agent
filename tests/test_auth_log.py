@@ -1,12 +1,8 @@
 import pytest
-import asyncio
 import os
-import json
 import jwt
-import base64
-import aiosqlite
 from datetime import datetime, timezone, timedelta
-from talos_governance_agent.domain.models import ExecutionStateEnum, ArtifactType
+from talos_governance_agent.domain.models import ArtifactType
 from talos_governance_agent.domain.runtime import TgaRuntime
 from talos_governance_agent.adapters.sqlite_state_store import SqliteStateStore
 from talos_governance_agent.utils.id import uuid7
@@ -81,7 +77,7 @@ async def test_full_audit_chain_completeness(runtime, keys):
     cap_jws = create_capability(trace_id, plan_id, priv_pem)
     
     # 1. Authorize Tool Call
-    entry = await runtime.authorize_tool_call(
+    await runtime.authorize_tool_call(
         cap_jws, "mcp-github", "create-pr", {"repo": "talosprotocol/talos", "title": "test"}
     )
     

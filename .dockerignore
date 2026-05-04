@@ -1,0 +1,16 @@
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+**/__pycache__/
+.venv/
+.venv*/
+.agent/
+.agents/
+.git
+.github/
+.coverage
+htmlcov/
+.pytest_cache/
+tests/
+build/

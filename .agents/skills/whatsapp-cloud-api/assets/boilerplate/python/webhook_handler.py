@@ -6,7 +6,7 @@ import os
 from functools import wraps
 from typing import Any
 
-from flask import Request, abort, request
+from flask import abort, request
 
 
 def validate_hmac_signature(app_secret: str | None = None):

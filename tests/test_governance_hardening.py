@@ -1,7 +1,5 @@
 import pytest
-import asyncio
 import os
-import json
 import jwt
 from datetime import datetime, timezone, timedelta
 from talos_governance_agent.domain.runtime import TgaRuntime, TgaRuntimeError
