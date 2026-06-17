@@ -191,6 +191,7 @@ class TgaRuntime:
                 idempotency_key=tool_call_obj["idempotency_key"],
                 session_id=session_id
             )
+            object.__setattr__(tc_entry, "artifact_payload", tool_call_obj)
             await self.store.append_log_entry(tc_entry)
             return tc_entry
             
